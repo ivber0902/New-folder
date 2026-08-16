@@ -6,6 +6,7 @@ import requests
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import Message
 from aiogram.filters import Command
+from aiohttp import web
 
 TOKEN = "8732492593:AAEisaSSVL1uNIxH4B4mYR9btgN3VfQ5Q3g"
 API_URL = "https://my.spbstu.ru/home/get-abit-list"
@@ -169,6 +170,22 @@ async def unsubscribe(message: Message):
     else:
         await message.answer("ℹ️ Вы не были подписаны.")
 
+# ------------------------ HTTP-сервер (в главном потоке) ------------------------
+async def health_check(request):
+    return web.Response(text="OK")
+
+async def start_http_server():
+    port = int(os.getenv("PORT", 10000))
+    app = web.Application()
+    app.router.add_get("/", health_check)
+    app.router.add_get("/health", health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, host="0.0.0.0", port=port)
+    await site.start()
+    print(f"✅ HTTP server running on port {port}")
+    await asyncio.Event().wait()  # держим сервер активным
+
 # ------------------------ Запуск ------------------------
 async def main():
     print("🤖 Бот запущен.")
@@ -178,8 +195,12 @@ async def main():
     # Первая проверка при старте
     await perform_check()
 
+    # Запускаем фоновые задачи (поллинг бота и периодическая проверка)
     asyncio.create_task(scheduled_check())
-    await dp.start_polling(bot)
+    asyncio.create_task(dp.start_polling(bot))
+
+    # Запускаем HTTP-сервер – он блокирует выполнение, но это и нужно для Render
+    await start_http_server()
 
 if __name__ == "__main__":
     asyncio.run(main())
