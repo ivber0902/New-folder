@@ -9,7 +9,6 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.types import Message
 from aiogram.filters import Command
 
-# -------------------- Настройка логирования --------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -17,7 +16,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# -------------------- Конфигурация --------------------
 TOKEN = os.getenv("BOT_TOKEN", "8732492593:AAEisaSSVL1uNIxH4B4mYR9btgN3VfQ5Q3g")
 API_URL = "https://my.spbstu.ru/home/get-abit-list"
 PARAMS = {
@@ -27,14 +25,13 @@ PARAMS = {
     "education_level": "bachelor_competition_lists"
 }
 TARGET_CODE = "1679369"
-
 USERS_FILE = "users.json"
 STATE_FILE = "last_state.json"
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# -------------------- Работа с файлами --------------------
+# -------------------- Файлы --------------------
 def load_users():
     if os.path.exists(USERS_FILE):
         with open(USERS_FILE, "r") as f:
@@ -55,28 +52,45 @@ def save_last_state(enrolled, informed):
     with open(STATE_FILE, "w") as f:
         json.dump({"enrolled": enrolled, "informed": informed}, f)
 
-# -------------------- Запросы к API --------------------
+# -------------------- API с расширенным логированием --------------------
 def get_applicants(retries=3, delay=5):
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Referer": "https://my.spbstu.ru/home/abit/list-applicants/bachelor_competition_lists",
-        "X-Requested-With": "XMLHttpRequest"
+        "X-Requested-With": "XMLHttpRequest",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7"
     }
     for attempt in range(retries):
         try:
+            logger.info(f"Запрос к API, попытка {attempt+1}/{retries}")
             response = requests.get(API_URL, params=PARAMS, headers=headers, timeout=15)
-            if response.status_code == 503:
-                logger.warning(f"503, попытка {attempt+1}/{retries} через {delay}с")
+            logger.info(f"Статус ответа: {response.status_code}")
+            logger.info(f"Content-Type: {response.headers.get('Content-Type')}")
+            logger.info(f"Длина ответа: {len(response.text)} символов")
+            if response.status_code != 200:
+                logger.warning(f"Неудачный статус: {response.status_code}")
+                # Логируем первые 500 символов ответа для диагностики
+                logger.warning(f"Тело ответа (первые 500 символов): {response.text[:500]}")
                 time.sleep(delay)
                 continue
-            response.raise_for_status()
-            data = response.json()
-            return data.get("results", [])
+            # Попытка парсинга JSON
+            try:
+                data = response.json()
+                results = data.get("results", [])
+                logger.info(f"Получено {len(results)} записей")
+                return results
+            except json.JSONDecodeError as e:
+                logger.error(f"Ошибка парсинга JSON: {e}")
+                logger.error(f"Получен не JSON: {response.text[:500]}")
+                time.sleep(delay)
+                continue
         except Exception as e:
-            logger.error(f"Ошибка (попытка {attempt+1}): {e}")
+            logger.error(f"Исключение в запросе (попытка {attempt+1}): {e}", exc_info=True)
             if attempt == retries-1:
                 raise
             time.sleep(delay)
+    logger.warning("Не удалось получить данные после всех попыток")
     return []
 
 def find_positions(applicants, target_code):
@@ -97,7 +111,7 @@ async def perform_check():
     try:
         applicants = get_applicants()
         if not applicants:
-            logger.warning("Нет данных")
+            logger.warning("⚠️ Нет данных")
             return
 
         new_enrolled, new_informed = find_positions(applicants, TARGET_CODE)
@@ -145,7 +159,7 @@ async def check_position(message: Message):
         await message.answer("⏳ Загружаю данные...")
         applicants = get_applicants()
         if not applicants:
-            await message.answer("⚠️ Нет данных. Попробуйте позже.")
+            await message.answer("⚠️ Не удалось получить данные. Проверьте логи.")
             return
         pos_enrolled, pos_informed = find_positions(applicants, TARGET_CODE)
         reply = (
@@ -190,10 +204,7 @@ async def main():
     # Первая проверка при старте
     await perform_check()
 
-    # Запускаем фоновую проверку
     asyncio.create_task(scheduled_check())
-
-    # Запускаем поллинг
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
