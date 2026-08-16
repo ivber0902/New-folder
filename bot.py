@@ -2,30 +2,11 @@ import asyncio
 import time
 import json
 import os
-import threading
 import requests
-from http.server import HTTPServer, BaseHTTPRequestHandler
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import Message
 from aiogram.filters import Command
-
-# ==================== HEALTH-СЕРВЕР ДЛЯ RENDER ====================
-class HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"OK")
-    def log_message(self, format, *args):
-        pass
-
-def start_health_server():
-    port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(('0.0.0.0', port), HealthHandler)
-    print(f"✅ Health server running on port {port}")
-    server.serve_forever()
-
-# Запускаем health-сервер в отдельном потоке
-threading.Thread(target=start_health_server, daemon=True).start()
+from aiohttp import web
 
 # ==================== КОНФИГУРАЦИЯ ====================
 TOKEN = "8732492593:AAEisaSSVL1uNIxH4B4mYR9btgN3VfQ5Q3g"
@@ -135,12 +116,27 @@ async def scheduled_check():
                     try:
                         await bot.send_message(user_id, msg, parse_mode="Markdown")
                     except Exception as e:
-                        print(f"❌ Не удалось отправить {user_id}: {e}")
+                        print(f"❌ Не удалось отправить сообщение {user_id}: {e}")
                 print("✅ Уведомления разосланы")
             else:
                 print("ℹ️ Изменений нет")
         except Exception as e:
             print(f"❌ Ошибка в фоновой проверке: {e}")
+
+# ==================== HTTP-СЕРВЕР ДЛЯ HEALTH CHECKS ====================
+async def health_check(request):
+    return web.Response(text="OK")
+
+async def start_http_server():
+    app = web.Application()
+    app.router.add_get('/', health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', 10000)
+    await site.start()
+    print("✅ Health server running on port 10000")
+    # Бесконечно ждём, чтобы сервер не завершался
+    await asyncio.Event().wait()
 
 # ==================== ОБРАБОТЧИКИ КОМАНД ====================
 @dp.message(Command("start", "help"))
@@ -162,7 +158,6 @@ async def check_position(message: Message):
         if not applicants:
             await message.answer("⚠️ Не удалось получить данные. Попробуйте позже.")
             return
-
         pos_enrolled, pos_informed = find_positions(applicants, TARGET_CODE)
         reply = (
             f"🔍 Результаты для кода **{TARGET_CODE}**:\n"
@@ -170,12 +165,10 @@ async def check_position(message: Message):
             f"• «Информирование получено»: {pos_informed if pos_informed is not None else '❌ не найден'}"
         )
         await message.answer(reply, parse_mode="Markdown")
-
         users = load_users()
         if message.from_user.id not in users:
             users.append(message.from_user.id)
             save_users(users)
-
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
 
@@ -206,6 +199,8 @@ async def main():
     print(f"📊 Последнее состояние: зачисление={last_state.get('enrolled')}, информирование={last_state.get('informed')}")
 
     asyncio.create_task(scheduled_check())
+    asyncio.create_task(start_http_server())
+
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
