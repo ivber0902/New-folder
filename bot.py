@@ -2,10 +2,30 @@ import asyncio
 import time
 import json
 import os
+import threading
 import requests
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import Message
 from aiogram.filters import Command
+
+# ==================== HEALTH-СЕРВЕР ДЛЯ RENDER ====================
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+    def log_message(self, format, *args):
+        pass
+
+def start_health_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(('0.0.0.0', port), HealthHandler)
+    print(f"✅ Health server running on port {port}")
+    server.serve_forever()
+
+# Запускаем health-сервер в отдельном потоке
+threading.Thread(target=start_health_server, daemon=True).start()
 
 # ==================== КОНФИГУРАЦИЯ ====================
 TOKEN = "8732492593:AAEisaSSVL1uNIxH4B4mYR9btgN3VfQ5Q3g"
@@ -18,9 +38,8 @@ PARAMS = {
 }
 TARGET_CODE = "1679369"
 
-# Файлы для хранения данных
-USERS_FILE = "users.json"          # список user_id
-STATE_FILE = "last_state.json"     # последние позиции
+USERS_FILE = "users.json"
+STATE_FILE = "last_state.json"
 
 # ==================== ИНИЦИАЛИЗАЦИЯ БОТА ====================
 bot = Bot(token=TOKEN)
@@ -28,26 +47,22 @@ dp = Dispatcher()
 
 # ==================== РАБОТА С ФАЙЛАМИ ====================
 def load_users():
-    """Загружает список user_id из файла"""
     if os.path.exists(USERS_FILE):
         with open(USERS_FILE, "r") as f:
             return json.load(f)
     return []
 
 def save_users(users):
-    """Сохраняет список user_id в файл"""
     with open(USERS_FILE, "w") as f:
         json.dump(users, f)
 
 def load_last_state():
-    """Загружает последние известные позиции"""
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r") as f:
             return json.load(f)
     return {"enrolled": None, "informed": None}
 
 def save_last_state(enrolled, informed):
-    """Сохраняет текущие позиции"""
     with open(STATE_FILE, "w") as f:
         json.dump({"enrolled": enrolled, "informed": informed}, f)
 
@@ -88,17 +103,14 @@ def find_positions(applicants, target_code):
     pos_informed = informed.index(target_code)+1 if target_code in informed else None
     return pos_enrolled, pos_informed
 
-# ==================== ФОНОВАЯ ЗАДАЧА (ПРОВЕРКА КАЖДЫЙ ЧАС) ====================
+# ==================== ФОНОВАЯ ЗАДАЧА ====================
 async def scheduled_check():
-    """Выполняется каждый час в 00 минут"""
     while True:
         now = time.localtime()
-        # Ждём до следующего часа ровно в 00 минут
         next_check = time.mktime((now.tm_year, now.tm_mon, now.tm_mday, now.tm_hour + 1, 0, 0, 0, 0, 0))
         sleep_seconds = max(0, next_check - time.time())
         await asyncio.sleep(sleep_seconds)
 
-        # Выполняем проверку
         try:
             print("🔄 Автоматическая проверка в", time.strftime("%H:%M"))
             applicants = get_applicants()
@@ -111,28 +123,22 @@ async def scheduled_check():
             old_enrolled = last_state.get("enrolled")
             old_informed = last_state.get("informed")
 
-            # Если изменилось — рассылаем всем пользователям
             if new_enrolled != old_enrolled or new_informed != old_informed:
-                # Обновляем сохранённое состояние
                 save_last_state(new_enrolled, new_informed)
-
-                # Формируем сообщение
                 msg = (
                     f"🔔 **Изменилась позиция абитуриента {TARGET_CODE}!**\n"
                     f"• «К зачислению»: было {old_enrolled or '❌'}, стало {new_enrolled or '❌'}\n"
                     f"• «Информирование получено»: было {old_informed or '❌'}, стало {new_informed or '❌'}"
                 )
-
                 users = load_users()
                 for user_id in users:
                     try:
                         await bot.send_message(user_id, msg, parse_mode="Markdown")
                     except Exception as e:
-                        print(f"❌ Не удалось отправить сообщение {user_id}: {e}")
+                        print(f"❌ Не удалось отправить {user_id}: {e}")
                 print("✅ Уведомления разосланы")
             else:
                 print("ℹ️ Изменений нет")
-
         except Exception as e:
             print(f"❌ Ошибка в фоновой проверке: {e}")
 
@@ -165,7 +171,6 @@ async def check_position(message: Message):
         )
         await message.answer(reply, parse_mode="Markdown")
 
-        # Автоматически добавляем пользователя в список подписчиков
         users = load_users()
         if message.from_user.id not in users:
             users.append(message.from_user.id)
@@ -194,17 +199,13 @@ async def unsubscribe(message: Message):
     else:
         await message.answer("ℹ️ Вы не были подписаны.")
 
-# ==================== ЗАПУСК БОТА ====================
+# ==================== ЗАПУСК ====================
 async def main():
     print("🤖 Бот запущен. Нажми Ctrl+C для остановки.")
-    # Загружаем последнее состояние при старте
     last_state = load_last_state()
     print(f"📊 Последнее состояние: зачисление={last_state.get('enrolled')}, информирование={last_state.get('informed')}")
 
-    # Запускаем фоновую задачу
     asyncio.create_task(scheduled_check())
-
-    # Запускаем поллинг
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
