@@ -6,9 +6,7 @@ import requests
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import Message
 from aiogram.filters import Command
-from aiohttp import web
 
-# ==================== КОНФИГУРАЦИЯ ====================
 TOKEN = "8732492593:AAEisaSSVL1uNIxH4B4mYR9btgN3VfQ5Q3g"
 API_URL = "https://my.spbstu.ru/home/get-abit-list"
 PARAMS = {
@@ -22,11 +20,10 @@ TARGET_CODE = "1679369"
 USERS_FILE = "users.json"
 STATE_FILE = "last_state.json"
 
-# ==================== ИНИЦИАЛИЗАЦИЯ БОТА ====================
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# ==================== РАБОТА С ФАЙЛАМИ ====================
+# ------------------------ Файлы ------------------------
 def load_users():
     if os.path.exists(USERS_FILE):
         with open(USERS_FILE, "r") as f:
@@ -47,7 +44,7 @@ def save_last_state(enrolled, informed):
     with open(STATE_FILE, "w") as f:
         json.dump({"enrolled": enrolled, "informed": informed}, f)
 
-# ==================== ЗАПРОСЫ К API ====================
+# ------------------------ API ------------------------
 def get_applicants(retries=3, delay=5):
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -72,8 +69,7 @@ def get_applicants(retries=3, delay=5):
     return []
 
 def find_positions(applicants, target_code):
-    enrolled = []
-    informed = []
+    enrolled, informed = [], []
     for app in applicants:
         code = app.get("code", "")
         if app.get("comment_status") == "К зачислению":
@@ -84,9 +80,8 @@ def find_positions(applicants, target_code):
     pos_informed = informed.index(target_code)+1 if target_code in informed else None
     return pos_enrolled, pos_informed
 
-# ==================== ОСНОВНАЯ ПРОВЕРКА ====================
+# ------------------------ Проверка ------------------------
 async def perform_check():
-    """Выполняет проверку и рассылку при изменениях"""
     try:
         print("🔄 Проверка в", time.strftime("%H:%M"))
         applicants = get_applicants()
@@ -106,49 +101,30 @@ async def perform_check():
                 f"• «К зачислению»: было {old_enrolled or '❌'}, стало {new_enrolled or '❌'}\n"
                 f"• «Информирование получено»: было {old_informed or '❌'}, стало {new_informed or '❌'}"
             )
-            users = load_users()
-            for user_id in users:
+            for user_id in load_users():
                 try:
                     await bot.send_message(user_id, msg, parse_mode="Markdown")
                 except Exception as e:
-                    print(f"❌ Не удалось отправить сообщение {user_id}: {e}")
+                    print(f"❌ Не удалось отправить {user_id}: {e}")
             print("✅ Уведомления разосланы")
         else:
             print("ℹ️ Изменений нет")
     except Exception as e:
-        print(f"❌ Ошибка в проверке: {e}")
+        print(f"❌ Ошибка проверки: {e}")
 
-# ==================== ФОНОВАЯ ЗАДАЧА (каждые 60 минут) ====================
 async def scheduled_check():
     while True:
         await asyncio.sleep(3600)  # 60 минут
         await perform_check()
 
-# ==================== HTTP-СЕРВЕР ДЛЯ HEALTH CHECK (Render) ====================
-async def health_check(request):
-    return web.Response(text="OK", status=200)
-
-async def run_health_server(port):
-    app = web.Application()
-    app.router.add_get("/", health_check)
-    app.router.add_get("/health", health_check)  # дополнительный эндпоинт
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, host="0.0.0.0", port=port)
-    await site.start()
-    print(f"✅ Health server running on port {port}")
-    await asyncio.Event().wait()  # держим сервер активным
-
-# ==================== ОБРАБОТЧИКИ КОМАНД ====================
+# ------------------------ Команды ------------------------
 @dp.message(Command("start", "help"))
 async def send_welcome(message: Message):
     await message.reply(
-        "👋 Привет! Я бот для отслеживания позиции абитуриента в списках СПбПУ.\n"
-        "Команды:\n"
-        "/check – показать текущую позицию для кода 1679369\n"
-        "/subscribe – подписаться на уведомления об изменениях\n"
-        "/unsubscribe – отписаться от уведомлений\n"
-        "Данные обновляются автоматически каждый час."
+        "👋 Привет! Я бот для отслеживания позиции абитуриента.\n"
+        "/check – текущая позиция\n"
+        "/subscribe – подписаться на уведомления\n"
+        "/unsubscribe – отписаться"
     )
 
 @dp.message(Command("check"))
@@ -157,9 +133,8 @@ async def check_position(message: Message):
         await message.answer("⏳ Загружаю данные...")
         applicants = get_applicants()
         if not applicants:
-            await message.answer("⚠️ Не удалось получить данные. Попробуйте позже.")
+            await message.answer("⚠️ Нет данных. Попробуйте позже.")
             return
-
         pos_enrolled, pos_informed = find_positions(applicants, TARGET_CODE)
         reply = (
             f"🔍 Результаты для кода **{TARGET_CODE}**:\n"
@@ -167,13 +142,10 @@ async def check_position(message: Message):
             f"• «Информирование получено»: {pos_informed if pos_informed is not None else '❌ не найден'}"
         )
         await message.answer(reply, parse_mode="Markdown")
-
-        # Автоподписка
         users = load_users()
         if message.from_user.id not in users:
             users.append(message.from_user.id)
             save_users(users)
-
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
 
@@ -183,7 +155,7 @@ async def subscribe(message: Message):
     if message.from_user.id not in users:
         users.append(message.from_user.id)
         save_users(users)
-        await message.answer("✅ Вы подписались на уведомления об изменениях.")
+        await message.answer("✅ Вы подписаны.")
     else:
         await message.answer("ℹ️ Вы уже подписаны.")
 
@@ -193,27 +165,20 @@ async def unsubscribe(message: Message):
     if message.from_user.id in users:
         users.remove(message.from_user.id)
         save_users(users)
-        await message.answer("✅ Вы отписались от уведомлений.")
+        await message.answer("✅ Вы отписаны.")
     else:
         await message.answer("ℹ️ Вы не были подписаны.")
 
-# ==================== ЗАПУСК ====================
+# ------------------------ Запуск ------------------------
 async def main():
-    print("🤖 Бот запущен. Нажми Ctrl+C для остановки.")
+    print("🤖 Бот запущен.")
     last_state = load_last_state()
-    print(f"📊 Последнее состояние: зачисление={last_state.get('enrolled')}, информирование={last_state.get('informed')}")
+    print(f"📊 Состояние: зачисление={last_state.get('enrolled')}, информирование={last_state.get('informed')}")
 
-    # Первая проверка при запуске (заполняем состояние)
+    # Первая проверка при старте
     await perform_check()
 
-    # Запускаем HTTP-сервер для health check
-    port = int(os.getenv("PORT", 10000))
-    asyncio.create_task(run_health_server(port))
-
-    # Запускаем фоновую проверку
     asyncio.create_task(scheduled_check())
-
-    # Запускаем поллинг
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
