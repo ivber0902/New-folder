@@ -26,7 +26,7 @@ STATE_FILE = "last_state.json"
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# ==================== ФУНКЦИИ РАБОТЫ С ФАЙЛАМИ ====================
+# ==================== РАБОТА С ФАЙЛАМИ ====================
 def load_users():
     if os.path.exists(USERS_FILE):
         with open(USERS_FILE, "r") as f:
@@ -84,61 +84,60 @@ def find_positions(applicants, target_code):
     pos_informed = informed.index(target_code)+1 if target_code in informed else None
     return pos_enrolled, pos_informed
 
-# ==================== ФОНОВАЯ ПРОВЕРКА (каждый час в 00 минут) ====================
+# ==================== ОСНОВНАЯ ПРОВЕРКА ====================
+async def perform_check():
+    """Выполняет проверку и рассылку при изменениях"""
+    try:
+        print("🔄 Проверка в", time.strftime("%H:%M"))
+        applicants = get_applicants()
+        if not applicants:
+            print("⚠️ Нет данных")
+            return
+
+        new_enrolled, new_informed = find_positions(applicants, TARGET_CODE)
+        last_state = load_last_state()
+        old_enrolled = last_state.get("enrolled")
+        old_informed = last_state.get("informed")
+
+        if new_enrolled != old_enrolled or new_informed != old_informed:
+            save_last_state(new_enrolled, new_informed)
+            msg = (
+                f"🔔 **Изменилась позиция абитуриента {TARGET_CODE}!**\n"
+                f"• «К зачислению»: было {old_enrolled or '❌'}, стало {new_enrolled or '❌'}\n"
+                f"• «Информирование получено»: было {old_informed or '❌'}, стало {new_informed or '❌'}"
+            )
+            users = load_users()
+            for user_id in users:
+                try:
+                    await bot.send_message(user_id, msg, parse_mode="Markdown")
+                except Exception as e:
+                    print(f"❌ Не удалось отправить сообщение {user_id}: {e}")
+            print("✅ Уведомления разосланы")
+        else:
+            print("ℹ️ Изменений нет")
+    except Exception as e:
+        print(f"❌ Ошибка в проверке: {e}")
+
+# ==================== ФОНОВАЯ ЗАДАЧА (каждые 60 минут) ====================
 async def scheduled_check():
     while True:
-        now = time.localtime()
-        next_check = time.mktime((now.tm_year, now.tm_mon, now.tm_mday, now.tm_hour + 1, 0, 0, 0, 0, 0))
-        sleep_seconds = max(0, next_check - time.time())
-        await asyncio.sleep(sleep_seconds)
-
-        try:
-            print("🔄 Автоматическая проверка в", time.strftime("%H:%M"))
-            applicants = get_applicants()
-            if not applicants:
-                continue
-
-            new_enrolled, new_informed = find_positions(applicants, TARGET_CODE)
-            last_state = load_last_state()
-            old_enrolled = last_state.get("enrolled")
-            old_informed = last_state.get("informed")
-
-            if new_enrolled != old_enrolled or new_informed != old_informed:
-                save_last_state(new_enrolled, new_informed)
-
-                msg = (
-                    f"🔔 **Изменилась позиция абитуриента {TARGET_CODE}!**\n"
-                    f"• «К зачислению»: было {old_enrolled or '❌'}, стало {new_enrolled or '❌'}\n"
-                    f"• «Информирование получено»: было {old_informed or '❌'}, стало {new_informed or '❌'}"
-                )
-
-                users = load_users()
-                for user_id in users:
-                    try:
-                        await bot.send_message(user_id, msg, parse_mode="Markdown")
-                    except Exception as e:
-                        print(f"❌ Не удалось отправить сообщение {user_id}: {e}")
-                print("✅ Уведомления разосланы")
-            else:
-                print("ℹ️ Изменений нет")
-
-        except Exception as e:
-            print(f"❌ Ошибка в фоновой проверке: {e}")
+        await asyncio.sleep(3600)  # 60 минут
+        await perform_check()
 
 # ==================== HTTP-СЕРВЕР ДЛЯ HEALTH CHECK (Render) ====================
 async def health_check(request):
-    return web.Response(text="OK")
+    return web.Response(text="OK", status=200)
 
 async def run_health_server(port):
     app = web.Application()
     app.router.add_get("/", health_check)
+    app.router.add_get("/health", health_check)  # дополнительный эндпоинт
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, host="0.0.0.0", port=port)
     await site.start()
     print(f"✅ Health server running on port {port}")
-    # Бесконечно держим задачу
-    await asyncio.Event().wait()
+    await asyncio.Event().wait()  # держим сервер активным
 
 # ==================== ОБРАБОТЧИКИ КОМАНД ====================
 @dp.message(Command("start", "help"))
@@ -203,6 +202,9 @@ async def main():
     print("🤖 Бот запущен. Нажми Ctrl+C для остановки.")
     last_state = load_last_state()
     print(f"📊 Последнее состояние: зачисление={last_state.get('enrolled')}, информирование={last_state.get('informed')}")
+
+    # Первая проверка при запуске (заполняем состояние)
+    await perform_check()
 
     # Запускаем HTTP-сервер для health check
     port = int(os.getenv("PORT", 10000))
