@@ -252,31 +252,33 @@ async def run_http_server():
         logger.error(f"Ошибка при запуске HTTP-сервера: {e}", exc_info=True)
         raise
 
+# -------------------- Heartbeat --------------------
+async def heartbeat():
+    while True:
+        logger.info("💓 Heartbeat: процесс жив")
+        await asyncio.sleep(30)
+
 # -------------------- Обработка сигналов --------------------
 def handle_sigterm(signum, frame):
     logger.info("Получен сигнал SIGTERM, завершаем работу")
-    # Здесь можно выполнить сохранение состояния, но мы уже сохраняем при изменениях
     sys.exit(0)
 
 # -------------------- Запуск --------------------
 async def main():
     logger.info("=== ЗАПУСК БОТА ===")
-    # Регистрируем обработчик SIGTERM
     signal.signal(signal.SIGTERM, handle_sigterm)
     
     last_state = load_last_state()
     logger.info(f"📊 Состояние: зачисление={last_state.get('enrolled')}, информирование={last_state.get('informed')}")
 
-    # Первая проверка при старте
     logger.info("Выполняем первую проверку")
     await perform_check()
 
-    # Запускаем фоновые задачи
-    logger.info("Создаём задачи поллинга и периодической проверки")
+    logger.info("Создаём задачи поллинга, периодической проверки и heartbeat")
     asyncio.create_task(dp.start_polling(bot))
     asyncio.create_task(scheduled_check())
+    asyncio.create_task(heartbeat())
 
-    # Запускаем HTTP-сервер (блокирующий)
     logger.info("Запускаем HTTP-сервер")
     await run_http_server()
 
